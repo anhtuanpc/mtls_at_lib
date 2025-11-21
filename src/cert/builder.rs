@@ -17,8 +17,16 @@ use rcgen::{
 /// signing key information.
 #[derive(Debug)]
 pub struct CertificateBuilder {
+    /// PEM-encoded private key used for signing the certificate
     signing_key: Option<String>,
+    /// Parsed CSR parameters
     csr_params: Option<CertificateSigningRequestParams>,
+    /// Not Before timestamp (certificate validity start time)
+    not_before: Option<std::time::SystemTime>,
+    /// Not After timestamp (certificate validity end time)
+    not_after: Option<std::time::SystemTime>,
+    /// CRL Distribution Points URIs
+    crl_distribution_points: Vec<String>,
 }
 
 impl CertificateBuilder {
@@ -46,6 +54,9 @@ impl CertificateBuilder {
         Self {
             signing_key: None,
             csr_params: None,
+            not_before: None,
+            not_after: None,
+            crl_distribution_points: Vec::new(),
         }
     }
     
@@ -95,6 +106,168 @@ impl CertificateBuilder {
         self
     }
     
+    /// Sets the Not Before timestamp (certificate validity start time)
+    ///
+    /// # Arguments
+    ///
+    /// * `not_before` - SystemTime when the certificate becomes valid
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mtls_at_lib::cert::CertificateBuilder;
+    /// use mtls_at_lib::csr::CsrBuilder;
+    /// use std::time::SystemTime;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let csr = CsrBuilder::new()
+    ///     .subject("CN=example.com")?
+    ///     .build()?;
+    ///
+    /// let now = SystemTime::now();
+    /// let builder = CertificateBuilder::new()
+    ///     .from_csr(csr.to_der())?
+    ///     .signing_key(csr.private_key_pem().to_string())
+    ///     .not_before(now);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn not_before(mut self, not_before: std::time::SystemTime) -> Self {
+        self.not_before = Some(not_before);
+        self
+    }
+    
+    /// Sets the Not After timestamp (certificate validity end time)
+    ///
+    /// # Arguments
+    ///
+    /// * `not_after` - SystemTime when the certificate expires
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mtls_at_lib::cert::CertificateBuilder;
+    /// use mtls_at_lib::csr::CsrBuilder;
+    /// use std::time::{SystemTime, Duration};
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let csr = CsrBuilder::new()
+    ///     .subject("CN=example.com")?
+    ///     .build()?;
+    ///
+    /// let expiry = SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60);
+    /// let builder = CertificateBuilder::new()
+    ///     .from_csr(csr.to_der())?
+    ///     .signing_key(csr.private_key_pem().to_string())
+    ///     .not_after(expiry);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn not_after(mut self, not_after: std::time::SystemTime) -> Self {
+        self.not_after = Some(not_after);
+        self
+    }
+    
+    /// Sets the validity period using a duration from now
+    ///
+    /// This is a convenience method that sets both not_before (to now) and
+    /// not_after (to now + duration).
+    ///
+    /// # Arguments
+    ///
+    /// * `duration` - How long the certificate should be valid
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mtls_at_lib::cert::CertificateBuilder;
+    /// use mtls_at_lib::csr::CsrBuilder;
+    /// use std::time::Duration;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let csr = CsrBuilder::new()
+    ///     .subject("CN=example.com")?
+    ///     .build()?;
+    ///
+    /// let builder = CertificateBuilder::new()
+    ///     .from_csr(csr.to_der())?
+    ///     .signing_key(csr.private_key_pem().to_string())
+    ///     .validity_duration(Duration::from_secs(365 * 24 * 60 * 60)); // 1 year
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn validity_duration(mut self, duration: std::time::Duration) -> Self {
+        let now = std::time::SystemTime::now();
+        self.not_before = Some(now);
+        self.not_after = Some(now + duration);
+        self
+    }
+    
+    /// Adds a CRL Distribution Point URI
+    ///
+    /// CRL Distribution Points specify where to obtain CRLs for checking
+    /// certificate revocation status.
+    ///
+    /// # Arguments
+    ///
+    /// * `uri` - URI of the CRL distribution point (e.g., "http://crl.example.com/ca.crl")
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mtls_at_lib::cert::CertificateBuilder;
+    /// use mtls_at_lib::csr::CsrBuilder;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let csr = CsrBuilder::new()
+    ///     .subject("CN=example.com")?
+    ///     .build()?;
+    ///
+    /// let builder = CertificateBuilder::new()
+    ///     .from_csr(csr.to_der())?
+    ///     .signing_key(csr.private_key_pem().to_string())
+    ///     .add_crl_distribution_point("http://crl.example.com/ca.crl")
+    ///     .add_crl_distribution_point("ldap://ldap.example.com/cn=CA,dc=example,dc=com");
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn add_crl_distribution_point(mut self, uri: impl Into<String>) -> Self {
+        self.crl_distribution_points.push(uri.into());
+        self
+    }
+    
+    /// Sets multiple CRL Distribution Point URIs
+    ///
+    /// # Arguments
+    ///
+    /// * `uris` - Vector of CRL distribution point URIs
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use mtls_at_lib::cert::CertificateBuilder;
+    /// use mtls_at_lib::csr::CsrBuilder;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let csr = CsrBuilder::new()
+    ///     .subject("CN=example.com")?
+    ///     .build()?;
+    ///
+    /// let builder = CertificateBuilder::new()
+    ///     .from_csr(csr.to_der())?
+    ///     .signing_key(csr.private_key_pem().to_string())
+    ///     .crl_distribution_points(vec![
+    ///         "http://crl.example.com/ca.crl".to_string(),
+    ///         "http://backup-crl.example.com/ca.crl".to_string(),
+    ///     ]);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn crl_distribution_points(mut self, uris: Vec<String>) -> Self {
+        self.crl_distribution_points = uris;
+        self
+    }
+    
     /// Builds a self-signed certificate
     ///
     /// For self-signed certificates, the public key in the CSR and the public key
@@ -107,8 +280,29 @@ impl CertificateBuilder {
     /// - Signing key is not provided
     /// - Public keys don't match
     pub fn build_self_signed(self) -> Result<Certificate, CertError> {
-        let (csr_params, signing_key_pem) = self.validate_and_extract()?;
+        // Extract fields before consuming self
+        let not_before = self.not_before;
+        let not_after = self.not_after;
+        let crl_dps = self.crl_distribution_points.clone();
+        
+        let (mut csr_params, signing_key_pem) = self.validate_and_extract()?;
         let signing_key_pair = Self::parse_key(&signing_key_pem)?;
+        
+        // Apply validity period if specified
+        if let Some(nb) = not_before {
+            csr_params.params.not_before = Self::time_to_offset_datetime(nb)?;
+        }
+        if let Some(na) = not_after {
+            csr_params.params.not_after = Self::time_to_offset_datetime(na)?;
+        }
+        
+        // Apply CRL Distribution Points if specified
+        if !crl_dps.is_empty() {
+            use rcgen::CrlDistributionPoint;
+            csr_params.params.crl_distribution_points = crl_dps.iter()
+                .map(|uri| CrlDistributionPoint { uris: vec![uri.clone()] })
+                .collect();
+        }
         
         // Note: For self-signed certificates, the caller must ensure that the signing_key
         // provided is the same key that was used to create the CSR. The CSR contains
@@ -150,8 +344,29 @@ impl CertificateBuilder {
     /// - Signing key is not provided
     /// - Public keys are identical (would be self-signed)
     pub fn build_ca_signed(self, ca_issuer_dn: &str) -> Result<Certificate, CertError> {
-        let (csr_params, signing_key_pem) = self.validate_and_extract()?;
+        // Extract fields before consuming self
+        let not_before = self.not_before;
+        let not_after = self.not_after;
+        let crl_dps = self.crl_distribution_points.clone();
+        
+        let (mut csr_params, signing_key_pem) = self.validate_and_extract()?;
         let ca_signing_key_pair = Self::parse_key(&signing_key_pem)?;
+        
+        // Apply validity period if specified
+        if let Some(nb) = not_before {
+            csr_params.params.not_before = Self::time_to_offset_datetime(nb)?;
+        }
+        if let Some(na) = not_after {
+            csr_params.params.not_after = Self::time_to_offset_datetime(na)?;
+        }
+        
+        // Apply CRL Distribution Points if specified
+        if !crl_dps.is_empty() {
+            use rcgen::CrlDistributionPoint;
+            csr_params.params.crl_distribution_points = crl_dps.iter()
+                .map(|uri| CrlDistributionPoint { uris: vec![uri.clone()] })
+                .collect();
+        }
         
         // For CA-signed certificates, the CSR's public key should be different from CA's key
         // Since rcgen doesn't expose direct public key comparison from CSR, we rely on
@@ -199,6 +414,17 @@ impl CertificateBuilder {
             .map_err(|e| CertError::SigningError(format!("Invalid signing key: {}", e)))
     }
     
+    /// Helper function to convert SystemTime to OffsetDateTime for rcgen
+    fn time_to_offset_datetime(time: std::time::SystemTime) -> Result<time::OffsetDateTime, CertError> {
+        use time::OffsetDateTime;
+        
+        let duration = time.duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| CertError::SigningError(format!("Time before UNIX epoch: {}", e)))?;
+        
+        OffsetDateTime::from_unix_timestamp(duration.as_secs() as i64)
+            .map_err(|e| CertError::SigningError(format!("Invalid timestamp: {}", e)))
+    }
+    
     /// Helper function to parse DN string into rcgen format
     fn parse_dn_string(dn_str: &str) -> Result<rcgen::DistinguishedName, CertError> {
         use rcgen::{DistinguishedName as RcgenDn, DnType};
@@ -231,6 +457,7 @@ impl CertificateBuilder {
 mod tests {
     use super::*;
     use crate::csr::CsrBuilder;
+    use x509_parser::prelude::*;
     
     /// Helper function to create a test CSR with its key
     fn create_test_csr() -> Result<(Vec<u8>, String, String), Box<dyn std::error::Error>> {
@@ -253,6 +480,12 @@ mod tests {
             .build_self_signed()?;
         
         Ok((ca_csr.private_key_pem().to_string(), ca_cert.to_pem()))
+    }
+    
+    /// Helper function to parse certificate DER
+    fn parse_cert(der: &[u8]) -> X509Certificate<'_> {
+        let (_, cert) = X509Certificate::from_der(der).expect("Failed to parse certificate");
+        cert
     }
     
     #[test]
@@ -351,6 +584,20 @@ mod tests {
         // Verify we can get PEM and DER formats
         assert!(!cert.to_pem().is_empty());
         assert!(!cert.to_der().is_empty());
+        
+        // Parse certificate and validate DN matches input
+        let parsed = parse_cert(cert.to_der());
+        let subject = parsed.subject();
+        
+        // Verify subject DN contains expected values
+        let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "test.example.com");
+        
+        let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+        assert_eq!(o, "Test Org");
+        
+        let c = subject.iter_country().next().unwrap().as_str().unwrap();
+        assert_eq!(c, "US");
     }
     
     #[test]
@@ -657,5 +904,316 @@ mod tests {
         assert!(!der.is_empty());
         // DER format typically starts with 0x30 (SEQUENCE tag)
         assert_eq!(der[0], 0x30);
+    }
+    
+    #[test]
+    fn test_certificate_private_key_der() {
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        // Test self-signed cert (should have private key)
+        let self_signed_cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem.clone())
+            .build_self_signed()
+            .unwrap();
+        
+        let private_key_der = self_signed_cert.private_key_der();
+        assert!(private_key_der.is_some(), "Self-signed cert should have private key DER");
+        
+        let der = private_key_der.unwrap();
+        assert!(!der.is_empty(), "Private key DER should not be empty");
+        
+        // DER private keys typically start with 0x30 (SEQUENCE tag)
+        assert_eq!(der[0], 0x30, "Private key DER should start with SEQUENCE tag");
+        
+        // Test CA-signed cert (should NOT have private key)
+        let (ca_key_pem, _) = create_ca_cert().unwrap();
+        let ca_signed_cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(ca_key_pem)
+            .build_ca_signed("CN=Test CA,O=Test CA Org,C=US")
+            .unwrap();
+        
+        assert!(ca_signed_cert.private_key_der().is_none(), "CA-signed cert should not have private key DER");
+    }
+    
+    #[test]
+    fn test_not_before_setter() {
+        use std::time::SystemTime;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let now = SystemTime::now();
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .not_before(now);
+        
+        assert!(builder.not_before.is_some());
+    }
+    
+    #[test]
+    fn test_not_after_setter() {
+        use std::time::{SystemTime, Duration};
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let expiry = SystemTime::now() + Duration::from_secs(365 * 24 * 60 * 60);
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .not_after(expiry);
+        
+        assert!(builder.not_after.is_some());
+    }
+    
+    #[test]
+    fn test_validity_duration_setter() {
+        use std::time::Duration;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let ninety_days = Duration::from_secs(90 * 24 * 60 * 60);
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .validity_duration(ninety_days);
+        
+        assert!(builder.not_before.is_some());
+        assert!(builder.not_after.is_some());
+    }
+    
+    #[test]
+    fn test_add_crl_distribution_point() {
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .add_crl_distribution_point("http://crl.example.com/ca.crl");
+        
+        assert_eq!(builder.crl_distribution_points.len(), 1);
+        assert_eq!(builder.crl_distribution_points[0], "http://crl.example.com/ca.crl");
+    }
+    
+    #[test]
+    fn test_multiple_crl_distribution_points() {
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .add_crl_distribution_point("http://crl1.example.com/ca.crl")
+            .add_crl_distribution_point("http://crl2.example.com/ca.crl")
+            .add_crl_distribution_point("ldap://ldap.example.com/cn=CA");
+        
+        assert_eq!(builder.crl_distribution_points.len(), 3);
+    }
+    
+    #[test]
+    fn test_crl_distribution_points_vector() {
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        let uris = vec![
+            "http://crl1.example.com/ca.crl".to_string(),
+            "http://crl2.example.com/ca.crl".to_string(),
+        ];
+        
+        let builder = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .crl_distribution_points(uris.clone());
+        
+        assert_eq!(builder.crl_distribution_points, uris);
+    }
+    
+    #[test]
+    fn test_self_signed_cert_with_validity_period() {
+        use std::time::{SystemTime, Duration};
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let now = SystemTime::now();
+        let one_year_later = now + Duration::from_secs(365 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .not_before(now)
+            .not_after(one_year_later)
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(!cert.to_pem().is_empty());
+        assert!(!cert.to_der().is_empty());
+    }
+    
+    #[test]
+    fn test_self_signed_cert_with_validity_duration() {
+        use std::time::Duration;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let ninety_days = Duration::from_secs(90 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .validity_duration(ninety_days)
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(cert.private_key_pem().is_some());
+    }
+    
+    #[test]
+    fn test_self_signed_cert_with_crl_distribution_points() {
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .add_crl_distribution_point("http://crl.example.com/ca.crl")
+            .add_crl_distribution_point("http://backup-crl.example.com/ca.crl")
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(!cert.to_pem().is_empty());
+    }
+    
+    #[test]
+    fn test_ca_signed_cert_with_validity_period() {
+        use std::time::{SystemTime, Duration};
+        
+        let (csr_der, _, _) = create_test_csr().unwrap();
+        let (ca_key_pem, _) = create_ca_cert().unwrap();
+        
+        let now = SystemTime::now();
+        let two_years_later = now + Duration::from_secs(2 * 365 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(ca_key_pem)
+            .not_before(now)
+            .not_after(two_years_later)
+            .build_ca_signed("CN=Test CA,O=Test CA Org,C=US");
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(cert.private_key_pem().is_none());
+        assert!(!cert.to_der().is_empty());
+    }
+    
+    #[test]
+    fn test_ca_signed_cert_with_crl_distribution_points() {
+        let (csr_der, _, _) = create_test_csr().unwrap();
+        let (ca_key_pem, _) = create_ca_cert().unwrap();
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(ca_key_pem)
+            .add_crl_distribution_point("http://ca-crl.example.com/ca.crl")
+            .add_crl_distribution_point("ldap://ldap.example.com/cn=CA,dc=example,dc=com")
+            .build_ca_signed("CN=Test CA,O=Test CA Org,C=US");
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(!cert.to_pem().is_empty());
+    }
+    
+    #[test]
+    fn test_cert_with_all_new_features() {
+        use std::time::{SystemTime, Duration};
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let now = SystemTime::now();
+        let expiry = now + Duration::from_secs(365 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .not_before(now)
+            .not_after(expiry)
+            .add_crl_distribution_point("http://crl.example.com/ca.crl")
+            .add_crl_distribution_point("http://backup-crl.example.com/ca.crl")
+            .add_crl_distribution_point("ldap://ldap.example.com/cn=CA,dc=example,dc=com")
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(cert.private_key_pem().is_some());
+        assert!(!cert.to_pem().is_empty());
+        assert!(!cert.to_der().is_empty());
+    }
+    
+    #[test]
+    fn test_ca_cert_with_long_validity_and_crl() {
+        use std::time::Duration;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let ten_years = Duration::from_secs(10 * 365 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .validity_duration(ten_years)
+            .add_crl_distribution_point("http://root-ca.example.com/root.crl")
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+        let cert = cert.unwrap();
+        assert!(!cert.to_der().is_empty());
+    }
+    
+    #[test]
+    fn test_short_lived_certificate() {
+        use std::time::Duration;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        let seven_days = Duration::from_secs(7 * 24 * 60 * 60);
+        
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .validity_duration(seven_days)
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
+    }
+    
+    #[test]
+    fn test_builder_method_chaining_with_new_fields() {
+        use std::time::Duration;
+        
+        let (csr_der, key_pem, _) = create_test_csr().unwrap();
+        
+        // Test that all methods can be chained fluently
+        let cert = CertificateBuilder::new()
+            .from_der(&csr_der)
+            .unwrap()
+            .signing_key(key_pem)
+            .validity_duration(Duration::from_secs(365 * 24 * 60 * 60))
+            .add_crl_distribution_point("http://crl1.example.com/ca.crl")
+            .add_crl_distribution_point("http://crl2.example.com/ca.crl")
+            .build_self_signed();
+        
+        assert!(cert.is_ok());
     }
 }

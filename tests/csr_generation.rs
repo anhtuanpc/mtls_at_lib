@@ -4,6 +4,13 @@
 
 use mtls_at_lib::csr::CsrBuilder;
 use mtls_at_lib::types::{ExtendedKeyUsage, KeyUsage};
+use x509_parser::prelude::*;
+
+/// Helper to parse CSR DER
+fn parse_csr(der: &[u8]) -> X509CertificationRequest<'_> {
+    let (_, csr) = X509CertificationRequest::from_der(der).expect("Failed to parse CSR");
+    csr
+}
 
 #[test]
 fn test_csr_generation_with_ku_and_eku_for_ca() {
@@ -43,8 +50,18 @@ fn test_csr_generation_with_ku_and_eku_for_ca() {
         private_key_pem.starts_with("-----BEGIN PRIVATE KEY-----"),
         "Private key PEM should start with key header"
     );
+    
+    // Parse CSR and validate subject DN matches input
+    let parsed = parse_csr(&der);
+    let subject = parsed.certification_request_info.subject;
+    let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+    assert_eq!(cn, "Test Root CA", "CN should match input");
+    let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+    assert_eq!(o, "Test Organization", "Organization should match input");
+    let c = subject.iter_country().next().unwrap().as_str().unwrap();
+    assert_eq!(c, "US", "Country should match input");
 
-    println!("✓ CA CSR generated successfully with Key Usage extensions");
+    println!("✓ CA CSR generated successfully with Key Usage extensions and validated DN");
 }
 
 #[test]
@@ -76,8 +93,18 @@ fn test_csr_generation_with_ku_and_eku_for_standard_cert() {
         !server_csr.private_key_der().is_empty(),
         "Private key should be generated"
     );
+    
+    // Parse CSR and validate subject DN matches input
+    let parsed = parse_csr(server_csr.to_der());
+    let subject = parsed.certification_request_info.subject;
+    let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+    assert_eq!(cn, "server.example.com", "CN should match input");
+    let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+    assert_eq!(o, "Example Corp", "Organization should match input");
+    let c = subject.iter_country().next().unwrap().as_str().unwrap();
+    assert_eq!(c, "US", "Country should match input");
 
-    println!("✓ Server CSR generated successfully with Key Usage and Extended Key Usage");
+    println!("✓ Server CSR generated successfully with Key Usage and Extended Key Usage, DN validated");
 }
 
 #[test]
@@ -362,4 +389,127 @@ fn test_multiple_csrs_with_same_key() {
                "Both CSRs should use the same private key");
     
     println!("✓ Multiple CSRs created successfully with the same key pair");
+}
+
+#[test]
+fn test_csr_with_path_len_constraint() {
+    // Test intermediate CA CSR with path length constraint of 1
+    let intermediate_csr = CsrBuilder::new()
+        .subject("CN=Intermediate CA,O=Test Organization,OU=PKI,C=US")
+        .expect("Failed to set subject")
+        .is_ca(true)
+        .path_len_constraint(1)
+        .key_usage(KeyUsage::key_cert_sign() | KeyUsage::crl_sign())
+        .build()
+        .expect("Failed to generate intermediate CA CSR with path_len_constraint");
+    
+    // Verify CSR was generated
+    let der = intermediate_csr.to_der();
+    assert!(!der.is_empty(), "Intermediate CA CSR should be generated");
+    
+    // Parse and validate subject
+    let parsed = parse_csr(&der);
+    let subject = parsed.certification_request_info.subject;
+    let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+    assert_eq!(cn, "Intermediate CA", "CN should match input");
+    
+    // Test leaf CA with path length constraint of 0 (no subordinate CAs)
+    let leaf_ca_csr = CsrBuilder::new()
+        .subject("CN=Leaf CA,O=Test Organization,C=US")
+        .expect("Failed to set subject")
+        .is_ca(true)
+        .path_len_constraint(0)
+        .key_usage(KeyUsage::key_cert_sign())
+        .build()
+        .expect("Failed to generate leaf CA CSR");
+    
+    assert!(!leaf_ca_csr.to_der().is_empty(), "Leaf CA CSR should be generated");
+    
+    println!("✓ CSRs with path_len_constraint generated successfully");
+}
+
+#[test]
+fn test_csr_with_state_and_locality() {
+    // Test CSR with State (ST) and Locality (L) DN components
+    let csr_st = CsrBuilder::new()
+        .subject("CN=Regional Server,ST=California,L=San Francisco,O=Tech Corp,C=US")
+        .expect("Failed to set subject")
+        .key_usage(KeyUsage::digital_signature() | KeyUsage::key_encipherment())
+        .extended_key_usage(vec![ExtendedKeyUsage::SERVER_AUTH])
+        .build()
+        .expect("Failed to generate CSR with ST and L");
+    
+    // Parse and validate all DN components
+    let parsed = parse_csr(csr_st.to_der());
+    let subject = parsed.certification_request_info.subject;
+    
+    let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+    assert_eq!(cn, "Regional Server", "CN should match");
+    
+    let state = subject.iter_state_or_province().next().unwrap().as_str().unwrap();
+    assert_eq!(state, "California", "State should match");
+    
+    let locality = subject.iter_locality().next().unwrap().as_str().unwrap();
+    assert_eq!(locality, "San Francisco", "Locality should match");
+    
+    let org = subject.iter_organization().next().unwrap().as_str().unwrap();
+    assert_eq!(org, "Tech Corp", "Organization should match");
+    
+    // Test with 'S' instead of 'ST'
+    let csr_s = CsrBuilder::new()
+        .subject("CN=Another Server,S=New York,L=Manhattan,O=Finance Corp,C=US")
+        .expect("Failed to set subject")
+        .build()
+        .expect("Failed to generate CSR with S and L");
+    
+    let parsed_s = parse_csr(csr_s.to_der());
+    let subject_s = parsed_s.certification_request_info.subject;
+    
+    let state_s = subject_s.iter_state_or_province().next().unwrap().as_str().unwrap();
+    assert_eq!(state_s, "New York", "State (S) should match");
+    
+    let locality_s = subject_s.iter_locality().next().unwrap().as_str().unwrap();
+    assert_eq!(locality_s, "Manhattan", "Locality should match");
+    
+    println!("✓ CSRs with State and Locality DN components validated successfully");
+}
+
+#[test]
+fn test_csr_private_key_reference() {
+    use rcgen::KeyPair;
+    
+    // Generate a CSR
+    let csr = CsrBuilder::new()
+        .subject("CN=key-reference-test.example.com")
+        .expect("Failed to set subject")
+        .build()
+        .expect("Failed to generate CSR");
+    
+    // Get reference to the private key
+    let key_ref = csr.private_key();
+    
+    // Verify we can use the reference to serialize the key
+    let pem_from_ref = key_ref.serialize_pem();
+    assert!(pem_from_ref.starts_with("-----BEGIN PRIVATE KEY-----"), 
+            "Key from reference should serialize to valid PEM");
+    
+    // Verify it matches the direct method
+    let pem_direct = csr.private_key_pem();
+    assert_eq!(pem_from_ref, pem_direct, 
+               "Key reference should provide same data as direct method");
+    
+    // Test DER format too
+    let der_from_ref = key_ref.serialize_der();
+    let der_direct = csr.private_key_der();
+    assert_eq!(der_from_ref, der_direct, 
+               "DER from reference should match direct access");
+    
+    // Verify we can create another key from the PEM and they're equivalent
+    let key_pair_reconstructed = KeyPair::from_pem(&pem_from_ref)
+        .expect("Should be able to reconstruct key from PEM");
+    let reconstructed_pem = key_pair_reconstructed.serialize_pem();
+    assert_eq!(pem_from_ref, reconstructed_pem, 
+               "Reconstructed key should match original");
+    
+    println!("✓ private_key() reference method works correctly");
 }

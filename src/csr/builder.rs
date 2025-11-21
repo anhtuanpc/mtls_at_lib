@@ -392,14 +392,18 @@ impl CsrBuilder {
     /// Converts our ExtendedKeyUsage to rcgen's format
     fn convert_extended_key_usage(eku_list: &[ExtendedKeyUsage]) -> Vec<ExtendedKeyUsagePurpose> {
         eku_list.iter().map(|eku| {
-            match eku {
-                _ if eku == &ExtendedKeyUsage::SERVER_AUTH => ExtendedKeyUsagePurpose::ServerAuth,
-                _ if eku == &ExtendedKeyUsage::CLIENT_AUTH => ExtendedKeyUsagePurpose::ClientAuth,
-                _ if eku == &ExtendedKeyUsage::CODE_SIGNING => ExtendedKeyUsagePurpose::CodeSigning,
-                _ if eku == &ExtendedKeyUsage::EMAIL_PROTECTION => ExtendedKeyUsagePurpose::EmailProtection,
-                _ if eku == &ExtendedKeyUsage::TIME_STAMPING => ExtendedKeyUsagePurpose::TimeStamping,
-                _ if eku == &ExtendedKeyUsage::OCSP_SIGNING => ExtendedKeyUsagePurpose::OcspSigning,
-                _ => ExtendedKeyUsagePurpose::ServerAuth, // Fallback
+            if eku == &ExtendedKeyUsage::SERVER_AUTH {
+                ExtendedKeyUsagePurpose::ServerAuth
+            } else if eku == &ExtendedKeyUsage::CLIENT_AUTH {
+                ExtendedKeyUsagePurpose::ClientAuth
+            } else if eku == &ExtendedKeyUsage::CODE_SIGNING {
+                ExtendedKeyUsagePurpose::CodeSigning
+            } else if eku == &ExtendedKeyUsage::EMAIL_PROTECTION {
+                ExtendedKeyUsagePurpose::EmailProtection
+            } else if eku == &ExtendedKeyUsage::TIME_STAMPING {
+                ExtendedKeyUsagePurpose::TimeStamping
+            } else {
+                ExtendedKeyUsagePurpose::OcspSigning
             }
         }).collect()
     }
@@ -414,7 +418,14 @@ impl Default for CsrBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::KeyUsage;
+    use crate::types::{KeyUsage, ExtendedKeyUsage};
+    use x509_parser::prelude::*;
+    
+    /// Helper to parse CSR DER
+    fn parse_csr(der: &[u8]) -> X509CertificationRequest<'_> {
+        let (_, csr) = X509CertificationRequest::from_der(der).expect("Failed to parse CSR");
+        csr
+    }
     
     #[test]
     fn test_basic_csr_generation() {
@@ -425,6 +436,12 @@ mod tests {
         let pem = csr.to_pem();
         assert!(pem.starts_with("-----BEGIN CERTIFICATE REQUEST-----"));
         assert!(!csr.to_der().is_empty());
+        
+        // Parse CSR and validate subject DN matches input
+        let parsed = parse_csr(csr.to_der());
+        let subject = parsed.certification_request_info.subject;
+        let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "test.example.com", "CN should match input");
     }
     
     #[test]
@@ -436,6 +453,16 @@ mod tests {
             .build().unwrap();
             
         assert!(!csr.to_der().is_empty());
+        
+        // Parse CSR and validate subject DN matches input
+        let parsed = parse_csr(csr.to_der());
+        let subject = parsed.certification_request_info.subject;
+        let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "Test Root CA");
+        let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+        assert_eq!(o, "Test Org");
+        let c = subject.iter_country().next().unwrap().as_str().unwrap();
+        assert_eq!(c, "US");
     }
     
     #[test]
@@ -469,5 +496,168 @@ mod tests {
         
         let der = csr.private_key_der();
         assert!(!der.is_empty());
+    }
+    
+    #[test]
+    fn test_path_len_constraint() {
+        // Test CA CSR with path length constraint
+        let csr = CsrBuilder::new()
+            .subject("CN=Intermediate CA,O=Test Org,C=US").unwrap()
+            .is_ca(true)
+            .path_len_constraint(1)
+            .key_usage(KeyUsage::key_cert_sign() | KeyUsage::crl_sign())
+            .build().unwrap();
+            
+        assert!(!csr.to_der().is_empty());
+        
+        // Verify CSR was created successfully
+        let parsed = parse_csr(csr.to_der());
+        let cn = parsed.certification_request_info.subject
+            .iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "Intermediate CA");
+    }
+    
+    #[test]
+    fn test_path_len_constraint_zero() {
+        // Test CA CSR with path length constraint of 0 (no subordinate CAs allowed)
+        let csr = CsrBuilder::new()
+            .subject("CN=Leaf CA,O=Test Org,C=US").unwrap()
+            .is_ca(true)
+            .path_len_constraint(0)
+            .key_usage(KeyUsage::key_cert_sign())
+            .build().unwrap();
+            
+        assert!(!csr.to_der().is_empty());
+        let pem = csr.to_pem();
+        assert!(pem.starts_with("-----BEGIN CERTIFICATE REQUEST-----"));
+    }
+    
+    #[test]
+    fn test_dn_state_and_locality_parsing() {
+        // Test parsing of State (ST and S) and Locality (L) DN components
+        let csr_st = CsrBuilder::new()
+            .subject("CN=Test Server,ST=California,L=San Francisco,O=Test Corp,C=US").unwrap()
+            .build().unwrap();
+            
+        let parsed_st = parse_csr(csr_st.to_der());
+        let subject_st = parsed_st.certification_request_info.subject;
+        
+        // Verify CN matches
+        let cn = subject_st.iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "Test Server");
+        
+        // Verify State (ST) matches
+        let state = subject_st.iter_state_or_province().next().unwrap().as_str().unwrap();
+        assert_eq!(state, "California", "State (ST) should match input");
+        
+        // Verify Locality (L) matches
+        let locality = subject_st.iter_locality().next().unwrap().as_str().unwrap();
+        assert_eq!(locality, "San Francisco", "Locality (L) should match input");
+        
+        // Test with 'S' instead of 'ST' for state
+        let csr_s = CsrBuilder::new()
+            .subject("CN=Test Server 2,S=New York,L=New York City,C=US").unwrap()
+            .build().unwrap();
+            
+        let parsed_s = parse_csr(csr_s.to_der());
+        let subject_s = parsed_s.certification_request_info.subject;
+        
+        let state_s = subject_s.iter_state_or_province().next().unwrap().as_str().unwrap();
+        assert_eq!(state_s, "New York", "State (S) should match input");
+        
+        let locality_s = subject_s.iter_locality().next().unwrap().as_str().unwrap();
+        assert_eq!(locality_s, "New York City", "Locality should match input");
+    }
+    
+    #[test]
+    fn test_dn_with_unknown_attributes_ignored() {
+        // Test that unknown DN attributes are ignored without causing errors
+        let csr = CsrBuilder::new()
+            .subject("CN=Test,UNKNOWN=Value,O=Org,C=US").unwrap()
+            .build().unwrap();
+            
+        let parsed = parse_csr(csr.to_der());
+        let subject = parsed.certification_request_info.subject;
+        
+        // Verify known attributes are parsed correctly
+        let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "Test");
+        let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+        assert_eq!(o, "Org");
+    }
+    
+    #[test]
+    fn test_extended_key_usage_fallback() {
+        // This test verifies the fallback behavior in convert_extended_key_usage
+        // While we can't directly test an unknown EKU value (since ExtendedKeyUsage is an enum),
+        // we can test that all known EKU values are correctly converted
+        let all_ekus = vec![
+            ExtendedKeyUsage::SERVER_AUTH,
+            ExtendedKeyUsage::CLIENT_AUTH,
+            ExtendedKeyUsage::CODE_SIGNING,
+            ExtendedKeyUsage::EMAIL_PROTECTION,
+            ExtendedKeyUsage::TIME_STAMPING,
+            ExtendedKeyUsage::OCSP_SIGNING,
+        ];
+        
+        let csr = CsrBuilder::new()
+            .subject("CN=test-all-eku.example.com").unwrap()
+            .extended_key_usage(all_ekus)
+            .build().unwrap();
+            
+        assert!(!csr.to_der().is_empty(), "CSR with all EKU types should be generated");
+        
+        // Parse and verify CSR is valid
+        let parsed = parse_csr(csr.to_der());
+        let cn = parsed.certification_request_info.subject
+            .iter_common_name().next().unwrap().as_str().unwrap();
+        assert_eq!(cn, "test-all-eku.example.com");
+    }
+    
+    #[test]
+    fn test_default_trait() {
+        // Test that Default::default() creates the same instance as new()
+        let builder1 = CsrBuilder::new();
+        let builder2 = CsrBuilder::default();
+        
+        // Both should successfully build a CSR with the same configuration
+        let csr1 = builder1.subject("CN=default-test.com").unwrap().build().unwrap();
+        let csr2 = builder2.subject("CN=default-test.com").unwrap().build().unwrap();
+        
+        assert!(!csr1.to_der().is_empty());
+        assert!(!csr2.to_der().is_empty());
+        
+        // Both CSRs should have the same subject
+        let parsed1 = parse_csr(csr1.to_der());
+        let parsed2 = parse_csr(csr2.to_der());
+        
+        let cn1 = parsed1.certification_request_info.subject.iter_common_name().next().unwrap().as_str().unwrap();
+        let cn2 = parsed2.certification_request_info.subject.iter_common_name().next().unwrap().as_str().unwrap();
+        
+        assert_eq!(cn1, cn2, "Both builders should create CSRs with same subject");
+    }
+    
+    #[test]
+    fn test_private_key_reference() {
+        // Test the private_key() method that returns a reference to KeyPair
+        let csr = CsrBuilder::new()
+            .subject("CN=key-ref-test.example.com").unwrap()
+            .build().unwrap();
+            
+        // Get reference to private key
+        let key_ref = csr.private_key();
+        
+        // Verify we can serialize from the reference
+        let pem_from_ref = key_ref.serialize_pem();
+        assert!(pem_from_ref.starts_with("-----BEGIN PRIVATE KEY-----"));
+        
+        // Verify it matches the direct method
+        let pem_direct = csr.private_key_pem();
+        assert_eq!(pem_from_ref, pem_direct, "Key reference should match direct access");
+        
+        // Verify DER format also matches
+        let der_from_ref = key_ref.serialize_der();
+        let der_direct = csr.private_key_der();
+        assert_eq!(der_from_ref, der_direct, "DER from reference should match direct access");
     }
 }

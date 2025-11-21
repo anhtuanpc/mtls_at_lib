@@ -292,103 +292,381 @@ impl fmt::Display for DistinguishedName {
     }
 }
 
-/// X.509 Certificate Serial Number
+
+/// Revocation reason codes (RFC 5280, Section 5.3.1)
 ///
-/// A unique positive integer assigned to each certificate by the CA.
-/// Must be unique within the CA's scope and should be unpredictable.
-///
-/// # Examples
-///
-/// ```
-/// use mtls_at_lib::types::SerialNumber;
-///
-/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// // Generate a random serial number
-/// let serial = SerialNumber::generate()?;
-///
-/// // Create from bytes
-/// let serial = SerialNumber::from_bytes(&[0x01, 0x02, 0x03]);
-/// # Ok(())
-/// # }
-/// ```
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SerialNumber {
-    bytes: Vec<u8>,
+/// Indicates why a certificate was revoked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationReason {
+    /// Unspecified reason (0)
+    Unspecified = 0,
+    
+    /// Private key has been compromised (1)
+    ///
+    /// **Critical**: Immediate revocation required.
+    /// Past signatures may be suspect.
+    KeyCompromise = 1,
+    
+    /// CA key has been compromised (2)
+    ///
+    /// **Critical**: All certificates issued by this CA are suspect.
+    CaCompromise = 2,
+    
+    /// Subject's affiliation has changed (3)
+    AffiliationChanged = 3,
+    
+    /// Certificate has been superseded (4)
+    Superseded = 4,
+    
+    /// Certificate is no longer needed (5)
+    CessationOfOperation = 5,
+    
+    /// Certificate is temporarily suspended (6)
+    ///
+    /// May be un-revoked later with removeFromCRL.
+    CertificateHold = 6,
+    
+    /// Remove from CRL (8)
+    ///
+    /// Un-revoke a certificate that was on hold.
+    RemoveFromCrl = 8,
+    
+    /// Privilege has been withdrawn (9)
+    PrivilegeWithdrawn = 9,
+    
+    /// Attribute Authority key compromised (10)
+    AaCompromise = 10,
 }
 
-impl SerialNumber {
-    /// Generates a cryptographically secure random serial number
-    ///
-    /// The serial number is:
-    /// - 20 bytes (160 bits) as per RFC 5280 maximum
-    /// - Positive (high bit cleared)
-    /// - Cryptographically random
-    ///
-    /// # Security
-    ///
-    /// Uses a cryptographically secure random number generator.
-    /// Serial numbers are unpredictable to prevent enumeration attacks.
-    pub fn generate() -> Result<Self, crate::error::CertError> {
-        use sha2::{Digest, Sha256};
-
-        // Get current timestamp
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| {
-                crate::error::CertError::SerialNumberError(format!("Time error: {}", e))
-            })?
-            .as_secs();
-
-        // Generate random bytes
-        let random_bytes: [u8; 16] = rand::random();
-
-        // Combine timestamp and random bytes, then hash
-        let mut hasher = Sha256::new();
-        hasher.update(&timestamp.to_be_bytes());
-        hasher.update(&random_bytes);
-        let hash = hasher.finalize();
-
-        // Take first 20 bytes
-        let mut serial = hash[..20].to_vec();
-
-        // Ensure positive (clear high bit)
-        serial[0] &= 0x7F;
-
-        Ok(SerialNumber { bytes: serial })
+impl RevocationReason {
+    /// Unspecified revocation reason
+    pub const UNSPECIFIED: Self = Self::Unspecified;
+    
+    /// Private key has been compromised
+    pub const KEY_COMPROMISE: Self = Self::KeyCompromise;
+    
+    /// CA key has been compromised
+    pub const CA_COMPROMISE: Self = Self::CaCompromise;
+    
+    /// Subject's affiliation has changed
+    pub const AFFILIATION_CHANGED: Self = Self::AffiliationChanged;
+    
+    /// Certificate has been superseded
+    pub const SUPERSEDED: Self = Self::Superseded;
+    
+    /// Certificate is no longer needed
+    pub const CESSATION_OF_OPERATION: Self = Self::CessationOfOperation;
+    
+    /// Certificate is temporarily suspended
+    pub const CERTIFICATE_HOLD: Self = Self::CertificateHold;
+    
+    /// Remove from CRL
+    pub const REMOVE_FROM_CRL: Self = Self::RemoveFromCrl;
+    
+    /// Privilege has been withdrawn
+    pub const PRIVILEGE_WITHDRAWN: Self = Self::PrivilegeWithdrawn;
+    
+    /// Attribute Authority key compromised
+    pub const AA_COMPROMISE: Self = Self::AaCompromise;
+    
+    /// Returns the numeric code
+    pub const fn code(self) -> u8 {
+        self as u8
     }
 
-    /// Creates a serial number from bytes
-    ///
-    /// # Arguments
-    ///
-    /// * `bytes` - Raw bytes of the serial number
-    ///
-    /// # Note
-    ///
-    /// The serial number should be positive. If the high bit is set,
-    /// it will be interpreted as negative in ASN.1 encoding.
-    pub fn from_bytes(bytes: &[u8]) -> Self {
-        SerialNumber {
-            bytes: bytes.to_vec(),
+    /// Creates from numeric code
+    pub fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(RevocationReason::Unspecified),
+            1 => Some(RevocationReason::KeyCompromise),
+            2 => Some(RevocationReason::CaCompromise),
+            3 => Some(RevocationReason::AffiliationChanged),
+            4 => Some(RevocationReason::Superseded),
+            5 => Some(RevocationReason::CessationOfOperation),
+            6 => Some(RevocationReason::CertificateHold),
+            8 => Some(RevocationReason::RemoveFromCrl),
+            9 => Some(RevocationReason::PrivilegeWithdrawn),
+            10 => Some(RevocationReason::AaCompromise),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for RevocationReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            RevocationReason::Unspecified => "Unspecified",
+            RevocationReason::KeyCompromise => "Key Compromise",
+            RevocationReason::CaCompromise => "CA Compromise",
+            RevocationReason::AffiliationChanged => "Affiliation Changed",
+            RevocationReason::Superseded => "Superseded",
+            RevocationReason::CessationOfOperation => "Cessation of Operation",
+            RevocationReason::CertificateHold => "Certificate Hold",
+            RevocationReason::RemoveFromCrl => "Remove from CRL",
+            RevocationReason::PrivilegeWithdrawn => "Privilege Withdrawn",
+            RevocationReason::AaCompromise => "AA Compromise",
+        };
+        write!(f, "{}", name)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // KeyUsage tests
+    #[test]
+    fn test_key_usage_bits() {
+        // Test that bits() returns the correct raw value
+        let ku = KeyUsage::digital_signature();
+        assert_eq!(ku.bits(), 1, "digital_signature should have bit value 1");
+
+        let ku = KeyUsage::key_cert_sign();
+        assert_eq!(ku.bits(), 32, "key_cert_sign should have bit value 32 (1 << 5)");
+
+        let combined = KeyUsage::digital_signature() | KeyUsage::key_encipherment();
+        assert_eq!(combined.bits(), 5, "Combined flags should have value 5 (1 | 4)");
+    }
+
+    #[test]
+    fn test_key_usage_from_bits() {
+        // Test creating KeyUsage from raw bits
+        let ku = KeyUsage::from_bits(1);
+        assert_eq!(ku.bits(), 1, "from_bits(1) should create digital_signature");
+        assert!(ku.contains(KeyUsage::digital_signature()));
+
+        let ku = KeyUsage::from_bits(32);
+        assert_eq!(ku.bits(), 32, "from_bits(32) should create key_cert_sign");
+        assert!(ku.contains(KeyUsage::key_cert_sign()));
+
+        // Test combined bits
+        let ku = KeyUsage::from_bits(5); // digital_signature | key_encipherment
+        assert!(ku.contains(KeyUsage::digital_signature()));
+        assert!(ku.contains(KeyUsage::key_encipherment()));
+        assert!(!ku.contains(KeyUsage::crl_sign()));
+    }
+
+    #[test]
+    fn test_key_usage_bits_roundtrip() {
+        // Test that bits() and from_bits() are inverses
+        let original = KeyUsage::digital_signature() | KeyUsage::key_cert_sign() | KeyUsage::crl_sign();
+        let bits = original.bits();
+        let reconstructed = KeyUsage::from_bits(bits);
+        
+        assert_eq!(original.bits(), reconstructed.bits(), "Roundtrip should preserve bits");
+        assert!(reconstructed.contains(KeyUsage::digital_signature()));
+        assert!(reconstructed.contains(KeyUsage::key_cert_sign()));
+        assert!(reconstructed.contains(KeyUsage::crl_sign()));
+    }
+
+    #[test]
+    fn test_key_usage_all_flags_bits() {
+        // Test all individual flag bit values
+        assert_eq!(KeyUsage::digital_signature().bits(), 1);
+        assert_eq!(KeyUsage::non_repudiation().bits(), 2);
+        assert_eq!(KeyUsage::key_encipherment().bits(), 4);
+        assert_eq!(KeyUsage::data_encipherment().bits(), 8);
+        assert_eq!(KeyUsage::key_agreement().bits(), 16);
+        assert_eq!(KeyUsage::key_cert_sign().bits(), 32);
+        assert_eq!(KeyUsage::crl_sign().bits(), 64);
+        assert_eq!(KeyUsage::encipher_only().bits(), 128);
+        assert_eq!(KeyUsage::decipher_only().bits(), 256);
+    }
+
+    // ExtendedKeyUsage tests
+    #[test]
+    fn test_extended_key_usage_oid() {
+        // Test that oid() returns the correct OID string
+        assert_eq!(ExtendedKeyUsage::SERVER_AUTH.oid(), "1.3.6.1.5.5.7.3.1");
+        assert_eq!(ExtendedKeyUsage::CLIENT_AUTH.oid(), "1.3.6.1.5.5.7.3.2");
+        assert_eq!(ExtendedKeyUsage::CODE_SIGNING.oid(), "1.3.6.1.5.5.7.3.3");
+        assert_eq!(ExtendedKeyUsage::EMAIL_PROTECTION.oid(), "1.3.6.1.5.5.7.3.4");
+        assert_eq!(ExtendedKeyUsage::TIME_STAMPING.oid(), "1.3.6.1.5.5.7.3.8");
+        assert_eq!(ExtendedKeyUsage::OCSP_SIGNING.oid(), "1.3.6.1.5.5.7.3.9");
+    }
+
+    #[test]
+    fn test_extended_key_usage_name() {
+        // Test that name() returns the correct human-readable name
+        assert_eq!(ExtendedKeyUsage::SERVER_AUTH.name(), "serverAuth");
+        assert_eq!(ExtendedKeyUsage::CLIENT_AUTH.name(), "clientAuth");
+        assert_eq!(ExtendedKeyUsage::CODE_SIGNING.name(), "codeSigning");
+        assert_eq!(ExtendedKeyUsage::EMAIL_PROTECTION.name(), "emailProtection");
+        assert_eq!(ExtendedKeyUsage::TIME_STAMPING.name(), "timeStamping");
+        assert_eq!(ExtendedKeyUsage::OCSP_SIGNING.name(), "ocspSigning");
+    }
+
+    #[test]
+    fn test_extended_key_usage_display() {
+        // Test the Display trait implementation
+        let server_auth = ExtendedKeyUsage::SERVER_AUTH;
+        let display_str = format!("{}", server_auth);
+        assert_eq!(display_str, "serverAuth (1.3.6.1.5.5.7.3.1)");
+
+        let client_auth = ExtendedKeyUsage::CLIENT_AUTH;
+        let display_str = format!("{}", client_auth);
+        assert_eq!(display_str, "clientAuth (1.3.6.1.5.5.7.3.2)");
+
+        let code_signing = ExtendedKeyUsage::CODE_SIGNING;
+        let display_str = format!("{}", code_signing);
+        assert_eq!(display_str, "codeSigning (1.3.6.1.5.5.7.3.3)");
+    }
+
+    #[test]
+    fn test_extended_key_usage_all_types_display() {
+        // Test Display for all EKU types
+        assert_eq!(format!("{}", ExtendedKeyUsage::SERVER_AUTH), "serverAuth (1.3.6.1.5.5.7.3.1)");
+        assert_eq!(format!("{}", ExtendedKeyUsage::CLIENT_AUTH), "clientAuth (1.3.6.1.5.5.7.3.2)");
+        assert_eq!(format!("{}", ExtendedKeyUsage::CODE_SIGNING), "codeSigning (1.3.6.1.5.5.7.3.3)");
+        assert_eq!(format!("{}", ExtendedKeyUsage::EMAIL_PROTECTION), "emailProtection (1.3.6.1.5.5.7.3.4)");
+        assert_eq!(format!("{}", ExtendedKeyUsage::TIME_STAMPING), "timeStamping (1.3.6.1.5.5.7.3.8)");
+        assert_eq!(format!("{}", ExtendedKeyUsage::OCSP_SIGNING), "ocspSigning (1.3.6.1.5.5.7.3.9)");
+    }
+
+    // DistinguishedName tests
+    #[test]
+    fn test_distinguished_name_common_name() {
+        // Test extracting common name from DN
+        let dn = DistinguishedName::from_str("CN=example.com,O=Example Corp,C=US")
+            .expect("Failed to parse DN");
+        assert_eq!(dn.common_name(), Some("example.com"));
+
+        // Test with spaces
+        let dn = DistinguishedName::from_str("CN=test.example.com, O=Test Org, C=US")
+            .expect("Failed to parse DN");
+        assert_eq!(dn.common_name(), Some("test.example.com"));
+
+        // Test with only CN
+        let dn = DistinguishedName::from_str("CN=simple.com")
+            .expect("Failed to parse DN");
+        assert_eq!(dn.common_name(), Some("simple.com"));
+    }
+
+    #[test]
+    fn test_distinguished_name_common_name_missing() {
+        // Test DN without CN
+        let dn = DistinguishedName::from_str("O=Example Corp,C=US")
+            .expect("Failed to parse DN");
+        assert_eq!(dn.common_name(), None, "DN without CN should return None");
+    }
+
+    #[test]
+    fn test_distinguished_name_common_name_with_complex_dn() {
+        // Test with full DN including state and locality
+        let dn = DistinguishedName::from_str("CN=server.example.com,OU=IT,O=Example Corp,L=San Francisco,ST=California,C=US")
+            .expect("Failed to parse DN");
+        assert_eq!(dn.common_name(), Some("server.example.com"));
+    }
+
+    #[test]
+    fn test_distinguished_name_display() {
+        // Test the Display trait implementation
+        let dn = DistinguishedName::from_str("CN=example.com,O=Example Corp,C=US")
+            .expect("Failed to parse DN");
+        let display_str = format!("{}", dn);
+        assert_eq!(display_str, "CN=example.com,O=Example Corp,C=US");
+
+        // Test with different DN format
+        let dn = DistinguishedName::from_str("CN=test.com")
+            .expect("Failed to parse DN");
+        assert_eq!(format!("{}", dn), "CN=test.com");
+    }
+
+    #[test]
+    fn test_distinguished_name_display_preserves_format() {
+        // Test that Display preserves the original format
+        let original = "CN=server.example.com,OU=Engineering,O=Tech Corp,L=New York,ST=NY,C=US";
+        let dn = DistinguishedName::from_str(original)
+            .expect("Failed to parse DN");
+        assert_eq!(format!("{}", dn), original, "Display should preserve original format");
+    }
+
+    // RevocationReason tests
+    #[test]
+    fn test_revocation_reason_code() {
+        // Test that code() returns the correct numeric code
+        assert_eq!(RevocationReason::Unspecified.code(), 0);
+        assert_eq!(RevocationReason::KeyCompromise.code(), 1);
+        assert_eq!(RevocationReason::CaCompromise.code(), 2);
+        assert_eq!(RevocationReason::AffiliationChanged.code(), 3);
+        assert_eq!(RevocationReason::Superseded.code(), 4);
+        assert_eq!(RevocationReason::CessationOfOperation.code(), 5);
+        assert_eq!(RevocationReason::CertificateHold.code(), 6);
+        assert_eq!(RevocationReason::RemoveFromCrl.code(), 8);
+        assert_eq!(RevocationReason::PrivilegeWithdrawn.code(), 9);
+        assert_eq!(RevocationReason::AaCompromise.code(), 10);
+    }
+
+    #[test]
+    fn test_revocation_reason_from_code() {
+        // Test creating RevocationReason from code
+        assert_eq!(RevocationReason::from_code(0), Some(RevocationReason::Unspecified));
+        assert_eq!(RevocationReason::from_code(1), Some(RevocationReason::KeyCompromise));
+        assert_eq!(RevocationReason::from_code(2), Some(RevocationReason::CaCompromise));
+        assert_eq!(RevocationReason::from_code(3), Some(RevocationReason::AffiliationChanged));
+        assert_eq!(RevocationReason::from_code(4), Some(RevocationReason::Superseded));
+        assert_eq!(RevocationReason::from_code(5), Some(RevocationReason::CessationOfOperation));
+        assert_eq!(RevocationReason::from_code(6), Some(RevocationReason::CertificateHold));
+        assert_eq!(RevocationReason::from_code(8), Some(RevocationReason::RemoveFromCrl));
+        assert_eq!(RevocationReason::from_code(9), Some(RevocationReason::PrivilegeWithdrawn));
+        assert_eq!(RevocationReason::from_code(10), Some(RevocationReason::AaCompromise));
+
+        // Test invalid codes
+        assert_eq!(RevocationReason::from_code(7), None, "Code 7 is not defined");
+        assert_eq!(RevocationReason::from_code(11), None, "Code 11 is not defined");
+        assert_eq!(RevocationReason::from_code(255), None, "Invalid code should return None");
+    }
+
+    #[test]
+    fn test_revocation_reason_code_roundtrip() {
+        // Test that code() and from_code() are inverses
+        let reasons = vec![
+            RevocationReason::Unspecified,
+            RevocationReason::KeyCompromise,
+            RevocationReason::CaCompromise,
+            RevocationReason::AffiliationChanged,
+            RevocationReason::Superseded,
+            RevocationReason::CessationOfOperation,
+            RevocationReason::CertificateHold,
+            RevocationReason::RemoveFromCrl,
+            RevocationReason::PrivilegeWithdrawn,
+            RevocationReason::AaCompromise,
+        ];
+
+        for reason in reasons {
+            let code = reason.code();
+            let reconstructed = RevocationReason::from_code(code);
+            assert_eq!(reconstructed, Some(reason), "Roundtrip should preserve reason");
         }
     }
 
-    /// Returns the serial number as bytes
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.bytes
+    #[test]
+    fn test_revocation_reason_display() {
+        // Test the Display trait implementation
+        assert_eq!(format!("{}", RevocationReason::Unspecified), "Unspecified");
+        assert_eq!(format!("{}", RevocationReason::KeyCompromise), "Key Compromise");
+        assert_eq!(format!("{}", RevocationReason::CaCompromise), "CA Compromise");
+        assert_eq!(format!("{}", RevocationReason::AffiliationChanged), "Affiliation Changed");
+        assert_eq!(format!("{}", RevocationReason::Superseded), "Superseded");
+        assert_eq!(format!("{}", RevocationReason::CessationOfOperation), "Cessation of Operation");
+        assert_eq!(format!("{}", RevocationReason::CertificateHold), "Certificate Hold");
+        assert_eq!(format!("{}", RevocationReason::RemoveFromCrl), "Remove from CRL");
+        assert_eq!(format!("{}", RevocationReason::PrivilegeWithdrawn), "Privilege Withdrawn");
+        assert_eq!(format!("{}", RevocationReason::AaCompromise), "AA Compromise");
     }
 
-    /// Returns the serial number as a hex string
-    pub fn to_hex(&self) -> String {
-        self.bytes
-            .iter()
-            .map(|b| format!("{:02x}", b))
-            .collect::<String>()
-    }
-}
-
-impl fmt::Display for SerialNumber {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_hex())
+    #[test]
+    fn test_revocation_reason_constants() {
+        // Test that the constant aliases match their enum values
+        assert_eq!(RevocationReason::UNSPECIFIED, RevocationReason::Unspecified);
+        assert_eq!(RevocationReason::KEY_COMPROMISE, RevocationReason::KeyCompromise);
+        assert_eq!(RevocationReason::CA_COMPROMISE, RevocationReason::CaCompromise);
+        assert_eq!(RevocationReason::AFFILIATION_CHANGED, RevocationReason::AffiliationChanged);
+        assert_eq!(RevocationReason::SUPERSEDED, RevocationReason::Superseded);
+        assert_eq!(RevocationReason::CESSATION_OF_OPERATION, RevocationReason::CessationOfOperation);
+        assert_eq!(RevocationReason::CERTIFICATE_HOLD, RevocationReason::CertificateHold);
+        assert_eq!(RevocationReason::REMOVE_FROM_CRL, RevocationReason::RemoveFromCrl);
+        assert_eq!(RevocationReason::PRIVILEGE_WITHDRAWN, RevocationReason::PrivilegeWithdrawn);
+        assert_eq!(RevocationReason::AA_COMPROMISE, RevocationReason::AaCompromise);
     }
 }

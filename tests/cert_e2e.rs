@@ -11,6 +11,7 @@ use mtls_at_lib::cert::CertificateBuilder;
 use mtls_at_lib::csr::CsrBuilder;
 use mtls_at_lib::types::{KeyUsage, ExtendedKeyUsage};
 use rcgen::KeyPair;
+use x509_parser::prelude::*;
 
 /// Helper to verify certificate PEM format
 fn verify_cert_pem_format(pem: &str) {
@@ -24,6 +25,12 @@ fn verify_cert_der_format(der: &[u8]) {
     assert!(!der.is_empty());
     // DER certificates start with SEQUENCE (0x30)
     assert_eq!(der[0], 0x30);
+}
+
+/// Helper to parse certificate DER
+fn parse_cert(der: &[u8]) -> X509Certificate<'_> {
+    let (_, cert) = X509Certificate::from_der(der).expect("Failed to parse certificate");
+    cert
 }
 
 #[test]
@@ -62,7 +69,17 @@ fn test_e2e_self_signed_certificate_workflow() {
     assert!(server_cert.private_key_pem().is_some());
     assert!(!server_cert.private_key_pem().unwrap().is_empty());
     
-    println!("✓ Step 3: Certificate validated");
+    // Parse certificate and validate subject DN matches input
+    let parsed = parse_cert(server_cert.to_der());
+    let subject = parsed.subject();
+    let cn = subject.iter_common_name().next().unwrap().as_str().unwrap();
+    assert_eq!(cn, "server.example.com", "CN should match input");
+    let o = subject.iter_organization().next().unwrap().as_str().unwrap();
+    assert_eq!(o, "Example Corp", "Organization should match input");
+    let c = subject.iter_country().next().unwrap().as_str().unwrap();
+    assert_eq!(c, "US", "Country should match input");
+    
+    println!("✓ Step 3: Certificate validated with DN data");
     
     // Step 4: Save to files (simulated)
     let cert_pem = server_cert.to_pem();
@@ -530,5 +547,311 @@ fn test_e2e_load_from_pem_and_der() {
     assert!(!cert_from_pem.to_der().is_empty());
     
     println!("✓ Step 4: Both certificates validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_certificate_with_validity_period() {
+    use std::time::{SystemTime, Duration};
+    
+    println!("\n=== E2E Test: Certificate with Explicit Validity Period ===");
+    
+    // Step 1: Create CSR
+    let server_csr = CsrBuilder::new()
+        .subject("CN=validity-test.example.com,O=Example Corp,C=US")
+        .expect("Failed to set subject")
+        .key_usage(KeyUsage::digital_signature() | KeyUsage::key_encipherment())
+        .extended_key_usage(vec![ExtendedKeyUsage::SERVER_AUTH])
+        .build()
+        .expect("Failed to build CSR");
+    
+    println!("✓ Step 1: CSR created");
+    
+    // Step 2: Create certificate with specific validity period
+    let now = SystemTime::now();
+    let one_year_later = now + Duration::from_secs(365 * 24 * 60 * 60);
+    
+    let cert = CertificateBuilder::new()
+        .from_der(server_csr.to_der())
+        .expect("Failed to load CSR")
+        .signing_key(server_csr.private_key_pem().to_string())
+        .not_before(now)
+        .not_after(one_year_later)
+        .build_self_signed()
+        .expect("Failed to build certificate with validity period");
+    
+    println!("✓ Step 2: Certificate created with 1-year validity period");
+    
+    // Step 3: Verify certificate
+    verify_cert_pem_format(&cert.to_pem());
+    verify_cert_der_format(&cert.to_der());
+    assert!(cert.private_key_pem().is_some());
+    
+    println!("✓ Step 3: Certificate with validity period validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_certificate_with_validity_duration() {
+    use std::time::Duration;
+    
+    println!("\n=== E2E Test: Certificate with Validity Duration ===");
+    
+    // Step 1: Create CSR
+    let server_csr = CsrBuilder::new()
+        .subject("CN=duration-test.example.com,O=Example Corp,C=US")
+        .expect("Failed to set subject")
+        .key_usage(KeyUsage::digital_signature())
+        .build()
+        .expect("Failed to build CSR");
+    
+    println!("✓ Step 1: CSR created");
+    
+    // Step 2: Create certificate with 90-day validity
+    let ninety_days = Duration::from_secs(90 * 24 * 60 * 60);
+    
+    let cert = CertificateBuilder::new()
+        .from_der(server_csr.to_der())
+        .expect("Failed to load CSR")
+        .signing_key(server_csr.private_key_pem().to_string())
+        .validity_duration(ninety_days)
+        .build_self_signed()
+        .expect("Failed to build certificate with validity duration");
+    
+    println!("✓ Step 2: Certificate created with 90-day validity duration");
+    
+    // Step 3: Verify certificate
+    verify_cert_pem_format(&cert.to_pem());
+    assert!(!cert.to_der().is_empty());
+    
+    println!("✓ Step 3: Certificate validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_certificate_with_crl_distribution_points() {
+    println!("\n=== E2E Test: Certificate with CRL Distribution Points ===");
+    
+    // Step 1: Create CSR
+    let server_csr = CsrBuilder::new()
+        .subject("CN=crl-enabled.example.com,O=Example Corp,C=US")
+        .expect("Failed to set subject")
+        .key_usage(KeyUsage::digital_signature() | KeyUsage::key_encipherment())
+        .extended_key_usage(vec![ExtendedKeyUsage::SERVER_AUTH])
+        .build()
+        .expect("Failed to build CSR");
+    
+    println!("✓ Step 1: CSR created");
+    
+    // Step 2: Create certificate with CRL distribution points
+    let cert = CertificateBuilder::new()
+        .from_der(server_csr.to_der())
+        .expect("Failed to load CSR")
+        .signing_key(server_csr.private_key_pem().to_string())
+        .add_crl_distribution_point("http://crl.example.com/ca.crl")
+        .add_crl_distribution_point("http://backup-crl.example.com/ca.crl")
+        .add_crl_distribution_point("ldap://ldap.example.com/cn=CA,dc=example,dc=com")
+        .build_self_signed()
+        .expect("Failed to build certificate with CRL DPs");
+    
+    println!("✓ Step 2: Certificate created with 3 CRL distribution points:");
+    println!("  - http://crl.example.com/ca.crl");
+    println!("  - http://backup-crl.example.com/ca.crl");
+    println!("  - ldap://ldap.example.com/cn=CA,dc=example,dc=com");
+    
+    // Step 3: Verify certificate
+    verify_cert_pem_format(&cert.to_pem());
+    verify_cert_der_format(&cert.to_der());
+    
+    println!("✓ Step 3: Certificate with CRL DPs validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_ca_signed_certificate_with_all_features() {
+    use std::time::{SystemTime, Duration};
+    
+    println!("\n=== E2E Test: CA-Signed Certificate with All Features ===");
+    
+    // Step 1: Create CA
+    let ca_csr = CsrBuilder::new()
+        .subject("CN=Full Featured CA,O=Example Corp,C=US")
+        .expect("Failed to set CA subject")
+        .key_usage(KeyUsage::key_cert_sign() | KeyUsage::crl_sign())
+        .build()
+        .expect("Failed to build CA CSR");
+    
+    let ca_cert = CertificateBuilder::new()
+        .from_der(ca_csr.to_der())
+        .expect("Failed to load CA CSR")
+        .signing_key(ca_csr.private_key_pem().to_string())
+        .validity_duration(Duration::from_secs(10 * 365 * 24 * 60 * 60)) // 10 years
+        .add_crl_distribution_point("http://root-ca.example.com/ca.crl")
+        .build_self_signed()
+        .expect("Failed to build CA certificate");
+    
+    println!("✓ Step 1: CA certificate created with 10-year validity and CRL DP");
+    
+    // Step 2: Create server CSR
+    let server_csr = CsrBuilder::new()
+        .subject("CN=full-featured.example.com,O=Example Corp,C=US")
+        .expect("Failed to set server subject")
+        .key_usage(KeyUsage::digital_signature() | KeyUsage::key_encipherment())
+        .extended_key_usage(vec![ExtendedKeyUsage::SERVER_AUTH, ExtendedKeyUsage::CLIENT_AUTH])
+        .add_san("full-featured.example.com")
+        .add_san("www.full-featured.example.com")
+        .build()
+        .expect("Failed to build server CSR");
+    
+    println!("✓ Step 2: Server CSR created");
+    
+    // Step 3: Sign server certificate with CA including all features
+    let now = SystemTime::now();
+    let two_years = Duration::from_secs(2 * 365 * 24 * 60 * 60);
+    
+    let server_cert = CertificateBuilder::new()
+        .from_der(server_csr.to_der())
+        .expect("Failed to load server CSR")
+        .signing_key(ca_cert.private_key_pem().unwrap().to_string())
+        .not_before(now)
+        .not_after(now + two_years)
+        .add_crl_distribution_point("http://server-crl.example.com/server.crl")
+        .add_crl_distribution_point("ldap://ldap.example.com/cn=Server,dc=example,dc=com")
+        .build_ca_signed("CN=Full Featured CA,O=Example Corp,C=US")
+        .expect("Failed to sign server certificate");
+    
+    println!("✓ Step 3: Server certificate signed by CA with:");
+    println!("  - 2-year validity period");
+    println!("  - 2 CRL distribution points");
+    
+    // Step 4: Verify complete chain
+    verify_cert_pem_format(&ca_cert.to_pem());
+    verify_cert_pem_format(&server_cert.to_pem());
+    
+    assert!(ca_cert.private_key_pem().is_some());
+    assert!(server_cert.private_key_pem().is_none());
+    assert!(!server_csr.private_key_pem().is_empty());
+    
+    println!("✓ Step 4: Complete certificate chain validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_short_lived_certificate() {
+    use std::time::Duration;
+    
+    println!("\n=== E2E Test: Short-Lived Certificate (7 days) ===");
+    
+    // Step 1: Create CSR
+    let csr = CsrBuilder::new()
+        .subject("CN=short-lived.example.com,O=Example Corp,C=US")
+        .expect("Failed to set subject")
+        .key_usage(KeyUsage::digital_signature())
+        .extended_key_usage(vec![ExtendedKeyUsage::CLIENT_AUTH])
+        .build()
+        .expect("Failed to build CSR");
+    
+    println!("✓ Step 1: CSR created for short-lived certificate");
+    
+    // Step 2: Create certificate with 7-day validity
+    let seven_days = Duration::from_secs(7 * 24 * 60 * 60);
+    
+    let cert = CertificateBuilder::new()
+        .from_der(csr.to_der())
+        .expect("Failed to load CSR")
+        .signing_key(csr.private_key_pem().to_string())
+        .validity_duration(seven_days)
+        .build_self_signed()
+        .expect("Failed to build short-lived certificate");
+    
+    println!("✓ Step 2: Short-lived certificate created (7-day validity)");
+    
+    // Step 3: Verify certificate
+    verify_cert_pem_format(&cert.to_pem());
+    assert!(cert.private_key_pem().is_some());
+    
+    println!("✓ Step 3: Short-lived certificate validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_long_lived_ca_certificate() {
+    use std::time::Duration;
+    
+    println!("\n=== E2E Test: Long-Lived CA Certificate (20 years) ===");
+    
+    // Step 1: Create CA CSR
+    let ca_csr = CsrBuilder::new()
+        .subject("CN=Long-Lived Root CA,O=Example Corp,C=US")
+        .expect("Failed to set CA subject")
+        .key_usage(KeyUsage::key_cert_sign() | KeyUsage::crl_sign())
+        .build()
+        .expect("Failed to build CA CSR");
+    
+    println!("✓ Step 1: CA CSR created");
+    
+    // Step 2: Create CA certificate with 20-year validity
+    let twenty_years = Duration::from_secs(20 * 365 * 24 * 60 * 60);
+    
+    let ca_cert = CertificateBuilder::new()
+        .from_der(ca_csr.to_der())
+        .expect("Failed to load CA CSR")
+        .signing_key(ca_csr.private_key_pem().to_string())
+        .validity_duration(twenty_years)
+        .add_crl_distribution_point("http://long-lived-ca.example.com/root.crl")
+        .build_self_signed()
+        .expect("Failed to build long-lived CA certificate");
+    
+    println!("✓ Step 2: CA certificate created with 20-year validity");
+    
+    // Step 3: Verify CA certificate
+    verify_cert_pem_format(&ca_cert.to_pem());
+    verify_cert_der_format(&ca_cert.to_der());
+    assert!(ca_cert.private_key_pem().is_some());
+    
+    println!("✓ Step 3: Long-lived CA certificate validated");
+    println!("=== Test Passed ===\n");
+}
+
+#[test]
+fn test_e2e_multiple_crl_distribution_points() {
+    println!("\n=== E2E Test: Certificate with Multiple CRL Protocols ===");
+    
+    // Step 1: Create CSR
+    let csr = CsrBuilder::new()
+        .subject("CN=multi-crl.example.com,O=Example Corp,C=US")
+        .expect("Failed to set subject")
+        .build()
+        .expect("Failed to build CSR");
+    
+    println!("✓ Step 1: CSR created");
+    
+    // Step 2: Create certificate with CRL DPs using different protocols
+    let crl_uris = vec![
+        "http://crl.example.com/ca.crl".to_string(),
+        "https://secure-crl.example.com/ca.crl".to_string(),
+        "ldap://ldap.example.com/cn=CA,dc=example,dc=com".to_string(),
+        "ftp://ftp.example.com/crl/ca.crl".to_string(),
+    ];
+    
+    let cert = CertificateBuilder::new()
+        .from_der(csr.to_der())
+        .expect("Failed to load CSR")
+        .signing_key(csr.private_key_pem().to_string())
+        .crl_distribution_points(crl_uris)
+        .build_self_signed()
+        .expect("Failed to build certificate with multiple CRL protocols");
+    
+    println!("✓ Step 2: Certificate created with 4 CRL distribution points:");
+    println!("  - HTTP protocol");
+    println!("  - HTTPS protocol");
+    println!("  - LDAP protocol");
+    println!("  - FTP protocol");
+    
+    // Step 3: Verify certificate
+    verify_cert_pem_format(&cert.to_pem());
+    assert!(!cert.to_der().is_empty());
+    
+    println!("✓ Step 3: Certificate with multi-protocol CRL DPs validated");
     println!("=== Test Passed ===\n");
 }

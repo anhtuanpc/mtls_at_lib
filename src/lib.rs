@@ -82,6 +82,8 @@ pub mod error;
 pub mod types;
 pub mod csr;
 pub mod cert;
+pub mod crl;
 
 pub use error::*;
 pub use types::*;
+pub use crl::*;

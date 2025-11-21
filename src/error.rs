@@ -44,3 +44,15 @@ pub enum CertError {
     #[error("Public key mismatch: {0}")]
     PublicKeyMismatch(String),
 }
+
+/// Errors that can occur during CRL (Certificate Revocation List) operations
+#[derive(Error, Debug)]
+pub enum CrlError {
+    /// Missing required field
+    #[error("Missing required field: {0}")]
+    MissingField(String),
+
+    /// Signing error
+    #[error("CRL signing failed: {0}")]
+    SigningError(String),
+}
